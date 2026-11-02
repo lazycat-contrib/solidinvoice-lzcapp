@@ -1,0 +1,44 @@
+application:
+  subdomain: solidinvoice
+  multi_instance: false
+  upstreams:
+    - location: /package-licenses/
+      backend: file:///lzcapp/pkg/content/licenses/
+    - location: /
+      backend: http://solidinvoice:80/
+
+services:
+  solidinvoice:
+    # upstream: solidinvoice/solidinvoice:3.1.2
+    image: docker.1ms.run/solidinvoice/solidinvoice:3.1.2
+    environment:
+      - |-
+        APP_SECRET={{ stable_secret "solidinvoice_app_secret" | replace "\r" "" | replace "\n" "" }}
+      - |-
+        APP_URL=https://{{ .S.AppDomain }}
+      - APP_ENV=prod
+      - APP_DEBUG=0
+      - DATABASE_URL=sqlite:////data/solidinvoice.db
+      - MAILER_DSN=null://null
+      - TZ=Asia/Shanghai
+    binds:
+      - /lzcapp/var/data:/data
+
+usage: |
+  SolidInvoice 是发票与报价管理工具：开报价单和发票、记录收款、设置定期发票。
+
+  使用方法：
+  1. 打开应用，会进入安装向导，填写管理员邮箱和密码，创建第一个账号。
+  2. 建客户（client），给客户开报价单（quote）或发票（invoice）。
+  3. 收到款项后在发票上登记付款；需要定期开票的可以设成周期发票。
+
+  数据与安全：
+  - 数据库（SQLite）和上传的附件保存在 /lzcapp/var/data，卸载应用会一并删除，请定期备份。
+  - 应用密钥由平台稳定密钥生成，每个部署不同，不写成固定值。
+  - 本包不预置任何账号或默认口令；安装向导只在尚未安装时出现，完成后自动关闭。
+  - 应用经懒猫入口鉴权访问。
+
+  说明：
+  - 单容器部署，使用内置 SQLite，无需额外数据库。
+  - 未配置邮件服务，给客户发邮件、找回密码等依赖邮件的功能不可用。
+  - 未做真机验证：安装向导、登录、建客户、开票、登记收款以及重启后持久化均未在设备上实测。
