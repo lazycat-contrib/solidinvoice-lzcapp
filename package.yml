@@ -1,6 +1,6 @@
 package: community.lazycat.app.solidinvoice
 name: SolidInvoice
-version: 0.0.0
+version: 3.1.2
 description: "Invoicing and quoting for freelancers and small businesses, with clients, payments and recurring invoices."
 min_os_version: "1.5.0"
 homepage: https://github.com/SolidInvoice/SolidInvoice
