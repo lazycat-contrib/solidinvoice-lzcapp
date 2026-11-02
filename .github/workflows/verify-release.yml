@@ -1,0 +1,112 @@
+name: Verify SolidInvoice Release on GitHub
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify
+        required: false
+        default: v3.1.2
+permissions:
+  contents: read
+concurrency:
+  group: solidinvoice-release-verification
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="$(gh release view --json tagName --jq .tagName)"; fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Download exact Release asset on runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ASSET_NAME="community.lazycat.app.solidinvoice-${RELEASE_TAG}.lpk"
+          echo "ASSET_NAME=$ASSET_NAME" >> "$GITHUB_ENV"
+          gh release view "$RELEASE_TAG" --json tagName,assets > release-metadata.json
+          gh release download "$RELEASE_TAG" --pattern "$ASSET_NAME" --dir verify-pkg
+
+      - name: Verify package contents
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, tarfile, yaml
+
+          tag = os.environ['RELEASE_TAG']
+          name = os.environ['ASSET_NAME']
+          pkg = __import__('pathlib').Path('verify-pkg') / name
+          assert pkg.is_file(), pkg
+
+          h = hashlib.sha256()
+          with pkg.open('rb') as fh:
+              for chunk in iter(lambda: fh.read(1 << 20), b''):
+                  h.update(chunk)
+
+          with tarfile.open(pkg, 'r:') as package:
+              members = package.getnames()
+              for required in ('manifest.yml', 'package.yml', 'content.tar', 'icon.png'):
+                  assert required in members, (required, members)
+
+              info = yaml.safe_load(package.extractfile('package.yml').read())
+              assert info['package'] == 'community.lazycat.app.solidinvoice', info['package']
+              assert info['name'] == 'SolidInvoice', info['name']
+              assert info['version'] == tag.lstrip('v'), (info['version'], tag)
+              assert info['license'] == 'MIT', info['license']
+              assert info['min_os_version'] == '1.5.0', info['min_os_version']
+
+              m = yaml.safe_load(package.extractfile('manifest.yml').read())
+              app = m['application']
+              assert app['subdomain'] == 'solidinvoice', app['subdomain']
+              ups = app['upstreams']
+              assert any(u['location'] == '/' and u['backend'] == 'http://solidinvoice:80/' for u in ups), ups
+
+              svcs = m['services']
+              assert set(svcs) == {'solidinvoice'}, set(svcs)
+
+              svc = svcs['solidinvoice']
+              assert 'solidinvoice/solidinvoice' in svc['image'], svc['image']
+              assert svc['image'].endswith(':' + tag.lstrip('v')), svc['image']
+
+              env = ' '.join(svc['environment'])
+              assert 'DATABASE_URL=sqlite:////data/solidinvoice.db' in env, env
+              assert 'APP_SECRET=' in env, env
+              assert 'stable_secret' in env, env
+              assert 'APP_ENV=prod' in env, env
+
+              assert any(b.endswith(':/data') for b in svc['binds']), svc['binds']
+
+              # single container, no sidecars
+              assert 'mysql' not in str(svcs).lower()
+              assert 'postgres' not in str(svcs).lower()
+              assert 'redis' not in str(svcs).lower()
+
+              assert 'healthcheck' not in svc, svc
+              text = package.extractfile('manifest.yml').read().decode()
+              assert 'lzc-file-chooser' not in text
+              assert 'deploy_params.yml' not in members, members
+
+              with tarfile.open(fileobj=package.extractfile('content.tar')) as content:
+                  cmembers = content.getnames()
+                  lic = [n for n in cmembers if 'licenses/' in n]
+                  assert lic, cmembers
+                  license_text = content.extractfile(lic[0]).read().decode()
+              assert 'MIT License' in license_text
+
+          result = {
+              'verified': True,
+              'tag': tag,
+              'sha256': h.hexdigest(),
+              'size': pkg.stat().st_size,
+              'runtime_tested': False,
+          }
+          print(json.dumps(result))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('```json\n' + json.dumps(result, indent=2) + '\n```\n')
+          PY
